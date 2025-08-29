@@ -31,66 +31,228 @@ name: 'Build and Deploy to Cloud Run'
 on:
   push:
     branches:
-      - '"main"'
+      - main
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag"
+        required: false
+        default: "v1"
+      model_gcs_uri:
+        description: "GCS URI to model tar.gz (e.g. gs://bucket/models/kcbert_model.tar.gz). If omitted, the workflow will auto-detect via secret/var or latest object in a bucket."
+        required: false
+      api_key:
+        description: "Optional API key to inject (X-API-Key)"
+        required: false
+      cors_origins:
+        description: "Optional comma-separated CORS origins for /predict"
+        required: false
+      threshold_certain:
+        description: "Optional MALICIOUS_THRESHOLD_CERTAIN (e.g. 0.999)"
+        required: false
+      threshold_ambiguous:
+        description: "Optional MALICIOUS_THRESHOLD_AMBIGUOUS (e.g. 0.9)"
+        required: false
 
 env:
-  PROJECT_ID: 'gradproject-464114'
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: 'us-west1'
   SERVICE: 'toxic-filter'
-  WORKLOAD_IDENTITY_PROVIDER: 'projects/534256318130/locations/global/workloadIdentityPools/github/providers/toxic-filtering'
+  REPO: toxic-filter
+  WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
 jobs:
   deploy:
-    runs-on: 'ubuntu-latest'
+    runs-on: ubuntu-latest
 
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: read
+      id-token: write
 
     steps:
-      - name: 'Checkout'
-        uses: 'actions/checkout@v4'
+      - name: Checkout
+        uses: actions/checkout@v4
 
       # Configure Workload Identity Federation and generate an access token.
       #
       # See https://github.com/google-github-actions/auth for more options,
       # including authenticating via a JSON credentials file.
-      - id: 'auth'
-        name: 'Authenticate to Google Cloud'
-        uses: 'google-github-actions/auth@v3'
+      - id: auth
+        name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: '${{ env.WORKLOAD_IDENTITY_PROVIDER }}'
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      # BEGIN - Docker auth and build
-      #
-      # If you already have a container image, you can omit these steps.
-      - name: 'Docker Auth'
-        uses: 'docker/login-action@v3'
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
         with:
-          username: 'oauth2accesstoken'
-          password: '${{ steps.auth.outputs.auth_token }}'
-          registry: '${{ env.REGION }}-docker.pkg.dev'
+          version: '>= 363.0.0'
 
-      - name: 'Build and Push Container'
-        run: |-
-          DOCKER_TAG="$${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}"
-          docker build --tag "${DOCKER_TAG}" .
-          docker push "${DOCKER_TAG}"
-          
-      - name: 'Deploy to Cloud Run'
+      - name: Set project
+        env:
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+        run: |
+          gcloud config set project "${GCP_PROJECT_ID}"
+          gcloud config set run/region "${{ env.REGION }}"
 
-        # END - Docker auth and build
+      - name: Enable required APIs
+        run: |
+          gcloud services enable \
+            run.googleapis.com \
+            artifactregistry.googleapis.com \
+            cloudbuild.googleapis.com
 
-        uses: 'google-github-actions/deploy-cloudrun@v2'
-        with:
-          service: '${{ env.SERVICE }}'
-          region: '${{ env.REGION }}'
-          # NOTE: If using a pre-built image, update the image name below:
+      - name: Ensure Artifact Registry repo
+        env:
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          gcloud artifacts repositories describe "${{ env.REPO }}" \
+            --location "${{ env.REGION }}" >/dev/null 2>&1 || \
+          gcloud artifacts repositories create "${{ env.REPO }}" \
+            --repository-format=docker \
+            --location "${{ env.REGION }}"
+      
+      - name: Build and Push image (Cloud Build)
+        env:
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'v1' }}
+          # Primary source: manual input; fallback to secrets/vars
+          MODEL_GCS_URI_IN: ${{ github.event.inputs.model_gcs_uri }}
+          MODEL_GCS_URI_SECRET: ${{ secrets.MODEL_GCS_URI }}
+          MODEL_GCS_URI_VAR: ${{ vars.MODEL_GCS_URI }}
+          # Optional: bucket/prefix to auto-discover latest tar.gz
+          MODEL_GCS_BUCKET: ${{ secrets.MODEL_GCS_BUCKET || vars.MODEL_GCS_BUCKET }}
+          MODEL_GCS_PREFIX: ${{ secrets.MODEL_GCS_PREFIX || vars.MODEL_GCS_PREFIX || 'models' }}
+          # Optional: direct HTTP(S) tarball URL
+          MODEL_TARBALL_URL: ${{ secrets.MODEL_TARBALL_URL || vars.MODEL_TARBALL_URL }}
+        run: |
+          set -euo pipefail
 
-          image: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}'
-          
-      # If required, use the Cloud Run URL output in later steps
-      - name: 'Show output'
-        run: |2-
+          # Resolve MODEL_GCS_URI from multiple sources
+          MODEL_GCS_URI=${MODEL_GCS_URI_IN:-}
+          if [[ -z "${MODEL_GCS_URI}" ]]; then
+            MODEL_GCS_URI=${MODEL_GCS_URI_SECRET:-}
+          fi
+          if [[ -z "${MODEL_GCS_URI}" ]]; then
+            MODEL_GCS_URI=${MODEL_GCS_URI_VAR:-}
+          fi
 
-          echo ${{ steps.deploy.outputs.url }}
+          # If still empty, try file-based configuration
+          if [[ -z "${MODEL_GCS_URI}" ]]; then
+            if [[ -f .model_gcs_uri ]]; then
+              MODEL_GCS_URI=$(< .model_gcs_uri)
+            elif [[ -f .github/model_gcs_uri ]]; then
+              MODEL_GCS_URI=$(< .github/model_gcs_uri)
+            fi
+          fi
+
+          # If still empty and BUCKET provided, auto-discover latest *.tar.gz under prefix
+          if [[ -z "${MODEL_GCS_URI}" && -n "${MODEL_GCS_BUCKET:-}" ]]; then
+            echo "Attempting to auto-detect latest tarball in gs://${MODEL_GCS_BUCKET}/${MODEL_GCS_PREFIX}/*.tar.gz" >&2
+            # gsutil ls -l prints lines with timestamps; filter valid object lines and pick the latest by timestamp
+            DETECTED=$(gsutil ls -l "gs://${MODEL_GCS_BUCKET}/${MODEL_GCS_PREFIX}/*.tar.gz" 2>/dev/null \
+              | awk '/^\s*[0-9]+\s+\S+\s+gs:\/\// {print $0}' \
+              | sort -k2,3 \
+              | awk '{print $NF}' \
+              | tail -n1 || true)
+            if [[ -n "${DETECTED}" ]]; then
+              MODEL_GCS_URI="$DETECTED"
+              echo "Auto-detected MODEL_GCS_URI=${MODEL_GCS_URI}" >&2
+            fi
+          fi
+
+          # If still empty but a direct URL is provided, we'll use curl in Cloud Build step
+          if [[ -z "${MODEL_GCS_URI}" && -z "${MODEL_TARBALL_URL:-}" ]]; then
+            echo "❌ MODEL_GCS_URI is missing. Provide via input, secret/var, .model_gcs_uri file, set MODEL_GCS_BUCKET for auto-detect, or provide MODEL_TARBALL_URL."
+            exit 1
+          fi
+
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ env.REPO }}/${{ env.SERVICE }}:${IMAGE_TAG}"
+          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+
+          # Generate Cloud Build config that pulls the model from GCS into the build context, then builds & pushes.
+          cat > cloudbuild.yaml <<EOF
+          steps:
+          - name: 'gcr.io/cloud-builders/gsutil'
+            id: 'fetch-model-gcs'
+            entrypoint: 'bash'
+            args:
+            - -c
+            - |
+              set -euo pipefail
+              if [[ -n "${MODEL_GCS_URI}" ]]; then
+                echo "Fetching from GCS: ${MODEL_GCS_URI}"
+                gsutil cp "${MODEL_GCS_URI}" kcbert_model.tar.gz
+              elif [[ -n "${MODEL_TARBALL_URL}" ]]; then
+                echo "Fetching from URL: ${MODEL_TARBALL_URL}"
+                curl -fSL "${MODEL_TARBALL_URL}" -o kcbert_model.tar.gz
+              else
+                echo 'No MODEL_GCS_URI or MODEL_TARBALL_URL provided' >&2
+                exit 1
+              fi
+          - name: 'gcr.io/cloud-builders/docker'
+            args: ['build', '-f', 'Dockerfile', '-t', '${IMAGE_URI}', '.']
+          images:
+          - '${IMAGE_URI}'
+          EOF
+
+          # Submit build
+          gcloud builds submit --config=cloudbuild.yaml --project "${GCP_PROJECT_ID}" .
+
+      - name: Deploy to Cloud Run
+        env:
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          IMAGE_URI: ${{ env.IMAGE_URI }}
+          # Optional inputs/secrets with fallback
+          API_KEY_IN: ${{ github.event.inputs.api_key || secrets.API_KEY }}
+          CORS_ORIGINS_IN: ${{ github.event.inputs.cors_origins }}
+          THRESHOLD_CERTAIN_IN: ${{ github.event.inputs.threshold_certain }}
+          THRESHOLD_AMBIGUOUS_IN: ${{ github.event.inputs.threshold_ambiguous }}
+        run: |
+          set -euo pipefail
+
+          # Build env var list conditionally
+          ENV_VARS="PORT=9090"
+          if [[ -n "${API_KEY_IN:-}" ]]; then
+            ENV_VARS+=",API_KEY=${API_KEY_IN}"
+          fi
+          if [[ -n "${CORS_ORIGINS_IN:-}" ]]; then
+            ENV_VARS+=",CORS_ORIGINS=${CORS_ORIGINS_IN}"
+          fi
+          if [[ -n "${THRESHOLD_CERTAIN_IN:-}" ]]; then
+            ENV_VARS+=",MALICIOUS_THRESHOLD_CERTAIN=${THRESHOLD_CERTAIN_IN}"
+          fi
+          if [[ -n "${THRESHOLD_AMBIGUOUS_IN:-}" ]]; then
+            ENV_VARS+=",MALICIOUS_THRESHOLD_AMBIGUOUS=${THRESHOLD_AMBIGUOUS_IN}"
+          fi
+
+          gcloud run deploy "${{ env.SERVICE }}" \
+            --image "${IMAGE_URI}" \
+            --region "${{ env.REGION }}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --cpu=1 \
+            --memory=1Gi \
+            --concurrency=80 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --port=9090 \
+            --ingress=all \
+            --labels=deployed_by=github-actions,commit_sha=${{ github.sha }} \
+            --update-env-vars "${ENV_VARS}"
+
+      - name: Get service URL
+        id: url
+        run: |
+          URL="$(gcloud run services describe '${{ env.SERVICE }}' --region='${{ env.REGION }}' --format='value(status.url)')"
+          echo "service_url=${URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Post deployment summary
+        run: |
+          echo "✅ Deployed **${{ env.SERVICE }}** to **${{ env.REGION }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Image: \`${{ env.IMAGE_URI }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- URL: ${{ steps.url.outputs.service_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
