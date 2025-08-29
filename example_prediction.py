@@ -1,10 +1,9 @@
-
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import sys
 
 # 1. 저장된 모델과 토크나이저 로드
-model_save_path = "./kcbert_slang_filter_model"
+model_save_path = "./kcbert_model"
 print(f"'{model_save_path}' 경로에서 모델과 토크나이저를 로드합니다...")
 
 try:

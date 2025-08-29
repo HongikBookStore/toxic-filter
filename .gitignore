@@ -10,7 +10,6 @@ venv/
 .env.*
 
 # Model artifacts (do not commit large files)
-/kcbert_slang_filter_model/
 *.tar.gz
 *.pt
 *.bin

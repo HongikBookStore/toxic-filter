@@ -9,14 +9,30 @@ on:
         description: "Image tag"
         required: false
         default: "v1"
-      model_tarball_url:
-        description: "Model tar.gz URL (GCS public or signed URL)"
+      model_gcs_uri:
+        description: "GCS URI to model tar.gz (e.g. gs://bucket/models/kcbert_model.tar.gz)"
+        required: true
+      api_key:
+        description: "Optional API key to inject (X-API-Key)"
+        required: false
+      cors_origins:
+        description: "Optional comma-separated CORS origins for /predict"
+        required: false
+      threshold_certain:
+        description: "Optional MALICIOUS_THRESHOLD_CERTAIN (e.g. 0.999)"
+        required: false
+      threshold_ambiguous:
+        description: "Optional MALICIOUS_THRESHOLD_AMBIGUOUS (e.g. 0.9)"
         required: false
 
 env:
-  REGION: asia-northeast3
-  SERVICE_NAME: slang-filter
-  REPO: slang
+  REGION: us-west1
+  SERVICE_NAME: toxic-filter
+  REPO: toxic-filter
+
+concurrency:
+  group: cloud-run-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -31,60 +47,122 @@ jobs:
       - name: Auth to GCP via WIF
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER || vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'beta'
 
       - name: Set project
-        run: gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          gcloud config set project "${GCP_PROJECT_ID}"
+          gcloud config set run/region "${{ env.REGION }}"
 
-      - name: Enable APIs
-        run: gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
+      - name: Enable required APIs
+        run: |
+          gcloud services enable \
+            run.googleapis.com \
+            artifactregistry.googleapis.com \
+            cloudbuild.googleapis.com
 
       - name: Ensure Artifact Registry repo
-        run: |
-          gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1 || \
-          gcloud artifacts repositories create "$REPO" --repository-format=docker --location "$REGION"
-
-      - name: Build and Push image
         env:
-          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'v1' }}
-          MODEL_TARBALL_URL: ${{ github.event.inputs.model_tarball_url }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
-          IMAGE_URI="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/${SERVICE_NAME}:${IMAGE_TAG}"
-          if [ -n "${MODEL_TARBALL_URL}" ]; then
-            cat > cloudbuild.yaml <<EOF
-            steps:
-            - name: 'gcr.io/cloud-builders/docker'
-              args: [ 'build', '-f', 'Dockerfile.remote', '--build-arg', 'MODEL_TARBALL_URL=${MODEL_TARBALL_URL}', '-t', '${IMAGE_URI}', '.' ]
-            images: ['${IMAGE_URI}']
-EOF
-            gcloud builds submit --config cloudbuild.yaml .
-          else
-            gcloud builds submit --tag "$IMAGE_URI" .
+          set -euo pipefail
+          gcloud artifacts repositories describe "${{ env.REPO }}" \
+            --location "${{ env.REGION }}" >/dev/null 2>&1 || \
+          gcloud artifacts repositories create "${{ env.REPO }}" \
+            --repository-format=docker \
+            --location "${{ env.REGION }}"
+
+      - name: Build and Push image (Cloud Build)
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'v1' }}
+          # Fallback to secret if manual input omitted (e.g., on push)
+          MODEL_GCS_URI: ${{ github.event.inputs.model_gcs_uri || secrets.MODEL_GCS_URI }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${MODEL_GCS_URI}" ]]; then
+            echo "❌ MODEL_GCS_URI is required. Provide via workflow input or set a repo secret 'MODEL_GCS_URI'."
+            exit 1
           fi
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ env.REPO }}/${{ env.SERVICE_NAME }}:${IMAGE_TAG}"
+          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+
+          # Generate Cloud Build config that pulls the model from GCS into the build context, then builds & pushes.
+          cat > cloudbuild.yaml <<EOF
+          steps:
+          - name: 'gcr.io/cloud-builders/gsutil'
+            args: ['cp', '${MODEL_GCS_URI}', 'kcbert_slang_filter_model.tar.gz']
+          - name: 'gcr.io/cloud-builders/docker'
+            args: ['build', '-f', 'Dockerfile', '-t', '${IMAGE_URI}', '.']
+          images:
+          - '${IMAGE_URI}'
+          EOF
+
+          # Submit build
+          gcloud builds submit --config=cloudbuild.yaml --project "${GCP_PROJECT_ID}" .
 
       - name: Deploy to Cloud Run
         env:
-          API_KEY: ${{ secrets.SLANG_API_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          IMAGE_URI: ${{ env.IMAGE_URI }}
+          # Optional inputs/secrets with fallback
+          API_KEY_IN: ${{ github.event.inputs.api_key || secrets.API_KEY }}
+          CORS_ORIGINS_IN: ${{ github.event.inputs.cors_origins }}
+          THRESHOLD_CERTAIN_IN: ${{ github.event.inputs.threshold_certain }}
+          THRESHOLD_AMBIGUOUS_IN: ${{ github.event.inputs.threshold_ambiguous }}
         run: |
-          FLAGS=(
-            --image "${IMAGE_URI}"
-            --region "$REGION"
-            --platform managed
-            --allow-unauthenticated
-            --cpu 1 --memory 2Gi --concurrency 1 --timeout 120
-            --min-instances 0 --max-instances 1
-          )
-          if [ -n "$API_KEY" ]; then
-            gcloud run deploy "$SERVICE_NAME" "${FLAGS[@]}" --set-env-vars API_KEY="$API_KEY"
-          else
-            gcloud run deploy "$SERVICE_NAME" "${FLAGS[@]}"
+          set -euo pipefail
+
+          # Build env var list conditionally
+          ENV_VARS="PORT=9090"
+          if [[ -n "${API_KEY_IN:-}" ]]; then
+            ENV_VARS+=",API_KEY=${API_KEY_IN}"
+          fi
+          if [[ -n "${CORS_ORIGINS_IN:-}" ]]; then
+            ENV_VARS+=",CORS_ORIGINS=${CORS_ORIGINS_IN}"
+          fi
+          if [[ -n "${THRESHOLD_CERTAIN_IN:-}" ]]; then
+            ENV_VARS+=",MALICIOUS_THRESHOLD_CERTAIN=${THRESHOLD_CERTAIN_IN}"
+          fi
+          if [[ -n "${THRESHOLD_AMBIGUOUS_IN:-}" ]]; then
+            ENV_VARS+=",MALICIOUS_THRESHOLD_AMBIGUOUS=${THRESHOLD_AMBIGUOUS_IN}"
           fi
 
-      - name: Output service URL
-        run: gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)'
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --image "${IMAGE_URI}" \
+            --region "${{ env.REGION }}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --cpu=1 \
+            --memory=1Gi \
+            --concurrency=80 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --port=9090 \
+            --ingress=all \
+            --labels=deployed_by=github-actions,commit_sha=${{ github.sha }} \
+            --update-env-vars "${ENV_VARS}"
 
+      - name: Get service URL
+        id: url
+        run: |
+          URL="$(gcloud run services describe '${{ env.SERVICE_NAME }}' --region='${{ env.REGION }}' --format='value(status.url)')"
+          echo "service_url=${URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Post deployment summary
+        run: |
+          echo "✅ Deployed **${{ env.SERVICE_NAME }}** to **${{ env.REGION }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Image: \`${{ env.IMAGE_URI }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- URL: ${{ steps.url.outputs.service_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

@@ -1,5 +1,5 @@
 {
-  "displayName": "Slang Filter API - Cloud Run",
+  "displayName": "Toxic Filter API - Cloud Run",
   "gridLayout": {
     "columns": 12,
     "widgets": [

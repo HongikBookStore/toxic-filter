@@ -1,0 +1,145 @@
+# 배포 가이드 (Cloud Run, 무키 + GCS 비공개)
+
+이 문서는 GitHub Actions + Workload Identity Federation(WIF)로 비밀키 없이 Cloud Run에 배포하고, 모델은 비공개 GCS에서 Cloud Build가 직접 복사해 사용하는 방법을 정리합니다.
+
+## 요약
+
+- 모델 tar.gz는 비공개 GCS 객체로 보관(예: `gs://<버킷>/models/kcbert_model.tar.gz`).
+- GitHub Actions가 WIF로 GCP 인증 → Cloud Build 실행 → 빌드 첫 단계에서 GCS에서 tar.gz 복사 → Docker가 로컬 tar.gz를 이미지에 포함.
+- Cloud Run은 `--min-instances 0` 등 무료 지향 설정.
+
+---
+
+## 선행 준비
+
+- 프로젝트: `gradproject-464114`
+- 리전: `us-west1`(예시, 일관되게 사용 권장)
+- 버킷: `hongbookstore-toxicfilter`(비공개)
+- 모델 tar.gz 업로드: `gsutil cp kcbert_model.tar.gz gs://hongbookstore-toxicfilter/models/`
+- 현재 업로드 되어있습니다. (2025.08.29)
+
+## 버킷/객체 접근 권한
+
+- Cloud Build 서비스 계정 또는 배포 파이프라인에서 사용하는 SA에 최소 `roles/storage.objectViewer`를 부여하세요.
+  - Cloud Build 기본 SA: `PROJECT_NUMBER@cloudbuild.gserviceaccount.com`
+  - 또는 버킷 단위 바인딩 예시:
+
+    ```bash
+    gcloud storage buckets add-iam-policy-binding gs://hongbookstore-toxicfilter \
+      --member=serviceAccount:PROJECT_NUMBER@cloudbuild.gserviceaccount.com \
+      --role=roles/storage.objectViewer
+    ```
+
+---
+
+## [1] GitHub Actions(WIF) 설정
+
+1. 배포용 SA 생성(없으면):
+
+   ```bash
+   gcloud iam service-accounts create ci-deployer --display-name="CI Deployer"
+   ```
+
+2. WIF 설정 스크립트 실행(OWNER/REPO 교체):
+
+   ```bash
+   PROJECT_ID=gradproject-464114 \
+   SERVICE_ACCOUNT=ci-deployer@gradproject-464114.iam.gserviceaccount.com \
+   REPO=OWNER/REPO \
+   bash scripts/setup_wif_github_oidc.sh
+   ```
+
+3. GitHub Secrets 등록:
+   - `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`
+   - `GCP_PROJECT_ID`
+   - 선택: `SLANG_API_KEY`(API 키 사용 시)
+
+---
+
+## [2] Actions로 배포 실행
+
+1. GitHub → Actions → “Deploy Cloud Run” → “Run workflow”
+2. inputs:
+   - `image_tag`: 예 `v1`
+   - `model_gcs_uri`: 예 `gs://hongbookstore-toxicfilter/models/kcbert_slang_filter_model.tar.gz`
+3. 워크플로우는 자동으로 Cloud Build에 다음 단계를 수행합니다:
+   - `gsutil cp <model_gcs_uri> kcbert_slang_filter_model.tar.gz`
+   - `docker build -f Dockerfile -t <IMAGE_URI> .` (Dockerfile이 로컬 tar.gz를 ADD/추출)
+   - Cloud Run에 배포(무료 지향 플래그)
+
+---
+
+## [3] 수동 배포(옵션)
+
+스크립트 없이 gcloud만으로 배포하려면 아래 명령을 사용하세요.
+
+1. 변수 설정(필요에 맞게 수정)
+
+```bash
+PROJECT_ID=gradproject-464114
+REGION=us-west1
+REPO=slang
+SERVICE_NAME=slang-filter
+IMAGE_TAG=v1
+MODEL_GCS_URI=gs://hongbookstore-toxicfilter/models/kcbert_slang_filter_model.tar.gz
+IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE_NAME}:${IMAGE_TAG}"
+```
+
+2. Artifact Registry 리포지토리 준비(최초 1회)
+
+```bash
+gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1 || \
+gcloud artifacts repositories create "$REPO" --repository-format=docker --location "$REGION"
+```
+
+3. Cloud Build로 이미지 빌드/푸시(GCS → 로컬 tar.gz → Dockerfile)
+
+```bash
+gcloud builds submit --config - . <<EOF
+steps:
+- name: 'gcr.io/cloud-builders/gsutil'
+  args: ['cp','${MODEL_GCS_URI}','kcbert_slang_filter_model.tar.gz']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build','-f','Dockerfile','-t','${IMAGE_URI}','.']
+images: ['${IMAGE_URI}']
+EOF
+```
+
+4. Cloud Run 배포(무료 지향 설정)
+
+```bash
+gcloud run deploy "$SERVICE_NAME" \
+  --image "$IMAGE_URI" \
+  --region "$REGION" \
+  --platform managed \
+  --allow-unauthenticated \
+  --cpu 1 --memory 2Gi \
+  --concurrency 1 --timeout 120 \
+  --min-instances 0 --max-instances 1 \
+  --set-env-vars API_KEY=,CORS_ORIGINS=,MALICIOUS_THRESHOLD_CERTAIN=0.999,MALICIOUS_THRESHOLD_AMBIGUOUS=0.9
+```
+
+---
+
+## [4] 확인/테스트
+
+서비스 URL 확인:
+
+```bash
+gcloud run services describe slang-filter --region us-west1 --format='value(status.url)'
+```
+
+스모크 테스트:
+
+```bash
+BASE_URL=https://<service-url> [API_KEY=...] bash scripts/smoke_test.sh
+```
+
+---
+
+## [5] 운영 팁
+
+- 무료 지향: `--min-instances 0`, `--max-instances 1` 유지(콜드스타트 감수)
+- CORS 제한: `CORS_ORIGINS` 환경변수로 필요한 오리진만 허용
+- 임계치 튜닝: `MALICIOUS_THRESHOLD_CERTAIN/AMBIGUOUS`
+- 모니터링: `monitoring/cloud_run_dashboard.json`로 대시보드 적용
