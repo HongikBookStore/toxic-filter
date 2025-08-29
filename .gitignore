@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local env
+.env
+.env.*
+
+# Model artifacts (do not commit large files)
+/kcbert_slang_filter_model/
+*.tar.gz
+*.pt
+*.bin
+
+# OS/Editor
+.DS_Store
+.idea/
+.vscode/
+

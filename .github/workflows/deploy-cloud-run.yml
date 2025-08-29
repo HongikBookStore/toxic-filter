@@ -1,0 +1,90 @@
+name: Deploy Cloud Run
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag"
+        required: false
+        default: "v1"
+      model_tarball_url:
+        description: "Model tar.gz URL (GCS public or signed URL)"
+        required: false
+
+env:
+  REGION: asia-northeast3
+  SERVICE_NAME: slang-filter
+  REPO: slang
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set project
+        run: gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Enable APIs
+        run: gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
+
+      - name: Ensure Artifact Registry repo
+        run: |
+          gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1 || \
+          gcloud artifacts repositories create "$REPO" --repository-format=docker --location "$REGION"
+
+      - name: Build and Push image
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'v1' }}
+          MODEL_TARBALL_URL: ${{ github.event.inputs.model_tarball_url }}
+        run: |
+          IMAGE_URI="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/${SERVICE_NAME}:${IMAGE_TAG}"
+          if [ -n "${MODEL_TARBALL_URL}" ]; then
+            cat > cloudbuild.yaml <<EOF
+            steps:
+            - name: 'gcr.io/cloud-builders/docker'
+              args: [ 'build', '-f', 'Dockerfile.remote', '--build-arg', 'MODEL_TARBALL_URL=${MODEL_TARBALL_URL}', '-t', '${IMAGE_URI}', '.' ]
+            images: ['${IMAGE_URI}']
+EOF
+            gcloud builds submit --config cloudbuild.yaml .
+          else
+            gcloud builds submit --tag "$IMAGE_URI" .
+          fi
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        env:
+          API_KEY: ${{ secrets.SLANG_API_KEY }}
+        run: |
+          FLAGS=(
+            --image "${IMAGE_URI}"
+            --region "$REGION"
+            --platform managed
+            --allow-unauthenticated
+            --cpu 1 --memory 2Gi --concurrency 1 --timeout 120
+            --min-instances 0 --max-instances 1
+          )
+          if [ -n "$API_KEY" ]; then
+            gcloud run deploy "$SERVICE_NAME" "${FLAGS[@]}" --set-env-vars API_KEY="$API_KEY"
+          else
+            gcloud run deploy "$SERVICE_NAME" "${FLAGS[@]}"
+          fi
+
+      - name: Output service URL
+        run: gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)'
+

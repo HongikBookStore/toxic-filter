@@ -1,0 +1,15 @@
+[project]
+name = "toxic-filter"
+version = "0.1.0"
+description = "Filtering toxic words for HongBookStore"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "accelerate>=1.10.1",
+    "flask>=3.1.2",
+    "flask-cors>=6.0.1",
+    "numpy>=2.3.2",
+    "requests>=2.32.5",
+    "torch>=2.8.0",
+    "transformers>=4.55.4",
+]

@@ -1,0 +1,87 @@
+{
+  "displayName": "Slang Filter API - Cloud Run",
+  "gridLayout": {
+    "columns": 12,
+    "widgets": [
+      {
+        "title": "Request Count (by class)",
+        "xyChart": {
+          "chartOptions": { "mode": "COLOR" },
+          "dataSets": [
+            {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"__SERVICE_NAME__\"",
+                "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE" },
+                "secondaryAggregation": { "alignmentPeriod": "60s" },
+                "unitOverride": "1"
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": { "label": "req/s", "scale": "LINEAR" }
+        },
+        "layout": { "x": 0, "y": 0, "width": 12, "height": 4 }
+      },
+      {
+        "title": "Latency (p50/p95)",
+        "xyChart": {
+          "chartOptions": { "mode": "COLOR" },
+          "dataSets": [
+            {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"run.googleapis.com/request_latencies\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"__SERVICE_NAME__\"",
+                "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_PERCENTILE_50" },
+                "unitOverride": "ms"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "p50"
+            },
+            {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"run.googleapis.com/request_latencies\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"__SERVICE_NAME__\"",
+                "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_PERCENTILE_95" },
+                "unitOverride": "ms"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "p95"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": { "label": "ms", "scale": "LINEAR" }
+        },
+        "layout": { "x": 0, "y": 4, "width": 12, "height": 4 }
+      },
+      {
+        "title": "Error Rate (4xx/5xx)",
+        "xyChart": {
+          "chartOptions": { "mode": "COLOR" },
+          "dataSets": [
+            {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"__SERVICE_NAME__\" metric.label.\"response_code_class\"=\"4xx\"",
+                "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE" },
+                "unitOverride": "1/s"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "4xx"
+            },
+            {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"__SERVICE_NAME__\" metric.label.\"response_code_class\"=\"5xx\"",
+                "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE" },
+                "unitOverride": "1/s"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "5xx"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": { "label": "err/s", "scale": "LINEAR" }
+        },
+        "layout": { "x": 0, "y": 8, "width": 12, "height": 4 }
+      }
+    ]
+  }
+}
+
