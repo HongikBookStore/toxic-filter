@@ -101,7 +101,7 @@ jobs:
           cat > cloudbuild.yaml <<EOF
           steps:
           - name: 'gcr.io/cloud-builders/gsutil'
-            args: ['cp', '${MODEL_GCS_URI}', 'kcbert_slang_filter_model.tar.gz']
+            args: ['cp', '${MODEL_GCS_URI}', 'kcbert_model.tar.gz']
           - name: 'gcr.io/cloud-builders/docker'
             args: ['build', '-f', 'Dockerfile', '-t', '${IMAGE_URI}', '.']
           images:
