@@ -97,11 +97,10 @@ jobs:
           gcloud services enable \
             run.googleapis.com \
             artifactregistry.googleapis.com \
-            cloudbuild.googleapis.com
+            cloudbuild.googleapis.com \
+            iamcredentials.googleapis.com
 
       - name: Ensure Artifact Registry repo
-        env:
-          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
           gcloud artifacts repositories describe "${{ env.REPO }}" \
@@ -112,7 +111,6 @@ jobs:
       
       - name: Build and Push image (Cloud Build)
         env:
-          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
           IMAGE_TAG: ${{ github.event.inputs.image_tag || 'v1' }}
           # Primary source: manual input; fallback to secrets/vars
           MODEL_GCS_URI_IN: ${{ github.event.inputs.model_gcs_uri }}
@@ -165,7 +163,7 @@ jobs:
             exit 1
           fi
 
-          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ env.REPO }}/${{ env.SERVICE }}:${IMAGE_TAG}"
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${PROJECT_ID}/${{ env.REPO }}/${{ env.SERVICE }}:${IMAGE_TAG}"
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
 
           # Generate Cloud Build config that pulls the model from GCS into the build context, then builds & pushes.
@@ -195,11 +193,10 @@ jobs:
           EOF
 
           # Submit build
-          gcloud builds submit --config=cloudbuild.yaml --project "${GCP_PROJECT_ID}" .
+          gcloud builds submit --config=cloudbuild.yaml --project "${PROJECT_ID}" .
 
       - name: Deploy to Cloud Run
         env:
-          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
           IMAGE_URI: ${{ env.IMAGE_URI }}
           # Optional inputs/secrets with fallback
           API_KEY_IN: ${{ github.event.inputs.api_key || secrets.API_KEY }}
