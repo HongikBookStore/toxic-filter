@@ -10,8 +10,8 @@ on:
         required: false
         default: "v1"
       model_gcs_uri:
-        description: "GCS URI to model tar.gz (e.g. gs://bucket/models/kcbert_model.tar.gz)"
-        required: true
+        description: "GCS URI to model tar.gz (e.g. gs://bucket/models/kcbert_model.tar.gz). If omitted, the workflow will auto-detect via secret/var or latest object in a bucket."
+        required: false
       api_key:
         description: "Optional API key to inject (X-API-Key)"
         required: false
@@ -84,13 +84,54 @@ jobs:
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           IMAGE_TAG: ${{ github.event.inputs.image_tag || 'v1' }}
-          # Fallback to secret if manual input omitted (e.g., on push)
-          MODEL_GCS_URI: ${{ github.event.inputs.model_gcs_uri || secrets.MODEL_GCS_URI }}
+          # Primary source: manual input; fallback to secrets/vars
+          MODEL_GCS_URI_IN: ${{ github.event.inputs.model_gcs_uri }}
+          MODEL_GCS_URI_SECRET: ${{ secrets.MODEL_GCS_URI }}
+          MODEL_GCS_URI_VAR: ${{ vars.MODEL_GCS_URI }}
+          # Optional: bucket/prefix to auto-discover latest tar.gz
+          MODEL_GCS_BUCKET: ${{ secrets.MODEL_GCS_BUCKET || vars.MODEL_GCS_BUCKET }}
+          MODEL_GCS_PREFIX: ${{ secrets.MODEL_GCS_PREFIX || vars.MODEL_GCS_PREFIX || 'models' }}
+          # Optional: direct HTTP(S) tarball URL
+          MODEL_TARBALL_URL: ${{ secrets.MODEL_TARBALL_URL || vars.MODEL_TARBALL_URL }}
         run: |
           set -euo pipefail
 
+          # Resolve MODEL_GCS_URI from multiple sources
+          MODEL_GCS_URI=${MODEL_GCS_URI_IN:-}
           if [[ -z "${MODEL_GCS_URI}" ]]; then
-            echo "❌ MODEL_GCS_URI is required. Provide via workflow input or set a repo secret 'MODEL_GCS_URI'."
+            MODEL_GCS_URI=${MODEL_GCS_URI_SECRET:-}
+          fi
+          if [[ -z "${MODEL_GCS_URI}" ]]; then
+            MODEL_GCS_URI=${MODEL_GCS_URI_VAR:-}
+          fi
+
+          # If still empty, try file-based configuration
+          if [[ -z "${MODEL_GCS_URI}" ]]; then
+            if [[ -f .model_gcs_uri ]]; then
+              MODEL_GCS_URI=$(< .model_gcs_uri)
+            elif [[ -f .github/model_gcs_uri ]]; then
+              MODEL_GCS_URI=$(< .github/model_gcs_uri)
+            fi
+          fi
+
+          # If still empty and BUCKET provided, auto-discover latest *.tar.gz under prefix
+          if [[ -z "${MODEL_GCS_URI}" && -n "${MODEL_GCS_BUCKET:-}" ]]; then
+            echo "Attempting to auto-detect latest tarball in gs://${MODEL_GCS_BUCKET}/${MODEL_GCS_PREFIX}/*.tar.gz" >&2
+            # gsutil ls -l prints lines with timestamps; filter valid object lines and pick the latest by timestamp
+            DETECTED=$(gsutil ls -l "gs://${MODEL_GCS_BUCKET}/${MODEL_GCS_PREFIX}/*.tar.gz" 2>/dev/null \
+              | awk '/^\s*[0-9]+\s+\S+\s+gs:\/\// {print $0}' \
+              | sort -k2,3 \
+              | awk '{print $NF}' \
+              | tail -n1 || true)
+            if [[ -n "${DETECTED}" ]]; then
+              MODEL_GCS_URI="$DETECTED"
+              echo "Auto-detected MODEL_GCS_URI=${MODEL_GCS_URI}" >&2
+            fi
+          fi
+
+          # If still empty but a direct URL is provided, we'll use curl in Cloud Build step
+          if [[ -z "${MODEL_GCS_URI}" && -z "${MODEL_TARBALL_URL:-}" ]]; then
+            echo "❌ MODEL_GCS_URI is missing. Provide via input, secret/var, .model_gcs_uri file, set MODEL_GCS_BUCKET for auto-detect, or provide MODEL_TARBALL_URL."
             exit 1
           fi
 
@@ -101,7 +142,22 @@ jobs:
           cat > cloudbuild.yaml <<EOF
           steps:
           - name: 'gcr.io/cloud-builders/gsutil'
-            args: ['cp', '${MODEL_GCS_URI}', 'kcbert_model.tar.gz']
+            id: 'fetch-model-gcs'
+            entrypoint: 'bash'
+            args:
+            - -c
+            - |
+              set -euo pipefail
+              if [[ -n "${MODEL_GCS_URI}" ]]; then
+                echo "Fetching from GCS: ${MODEL_GCS_URI}"
+                gsutil cp "${MODEL_GCS_URI}" kcbert_model.tar.gz
+              elif [[ -n "${MODEL_TARBALL_URL}" ]]; then
+                echo "Fetching from URL: ${MODEL_TARBALL_URL}"
+                curl -fSL "${MODEL_TARBALL_URL}" -o kcbert_model.tar.gz
+              else
+                echo 'No MODEL_GCS_URI or MODEL_TARBALL_URL provided' >&2
+                exit 1
+              fi
           - name: 'gcr.io/cloud-builders/docker'
             args: ['build', '-f', 'Dockerfile', '-t', '${IMAGE_URI}', '.']
           images:
