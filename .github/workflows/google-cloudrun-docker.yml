@@ -86,14 +86,10 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
-        with:
-          version: '>= 363.0.0'
 
       - name: Set project
-        env:
-          GCP_PROJECT_ID: ${{ env.PROJECT_ID }}
         run: |
-          gcloud config set project "${GCP_PROJECT_ID}"
+          gcloud config set project "${{ env.PROJECT_ID }}"
           gcloud config set run/region "${{ env.REGION }}"
 
       - name: Enable required APIs
