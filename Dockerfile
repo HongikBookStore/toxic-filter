@@ -6,18 +6,27 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates tar \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates tar findutils \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 
 ENV MODEL_PATH=./kcbert_model
 COPY kcbert_model.tar.gz /tmp/model.tar.gz
-RUN mkdir -p "$MODEL_PATH" \
-    && tar -xzf /tmp/model.tar.gz -C /app \
-    && rm -f /tmp/model.tar.gz \
-    && test -f "$MODEL_PATH/config.json"
+RUN set -e; \
+    mkdir -p "$MODEL_PATH" /tmp/model_extract; \
+    tar --warning=no-unknown-keyword -xzf /tmp/model.tar.gz -C /tmp/model_extract; \
+    rm -f /tmp/model.tar.gz; \
+    if [ -f "/tmp/model_extract/config.json" ]; then \
+      rm -rf "$MODEL_PATH" && mv /tmp/model_extract "$MODEL_PATH"; \
+    else \
+      CANDIDATE="$(find /tmp/model_extract -maxdepth 3 -type f -name config.json | head -n1)"; \
+      if [ -z "$CANDIDATE" ]; then echo 'config.json not found in extracted model'; exit 1; fi; \
+      DIR="$(dirname "$CANDIDATE")"; \
+      rm -rf "$MODEL_PATH" && mv "$DIR" "$MODEL_PATH"; \
+    fi; \
+    test -f "$MODEL_PATH/config.json"
 
 COPY app.py ./
 
