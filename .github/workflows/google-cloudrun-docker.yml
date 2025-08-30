@@ -193,10 +193,16 @@ jobs:
           EOF
 
           # Submit build without streaming logs (avoids VPC-SC/logs-bucket restrictions)
-          # Capture BUILD_ID from the creation message and poll for completion.
+          # Capture BUILD_ID robustly from the creation output; avoid set -e/pipefail aborts.
           CREATE_OUT=$(gcloud builds submit --config=cloudbuild.yaml --project "${PROJECT_ID}" --async .)
           echo "$CREATE_OUT"
-          BUILD_ID=$(printf "%s" "$CREATE_OUT" | grep -oE 'builds/[0-9a-f-]+' | sed 's|builds/||' | head -n1)
+          # Try to parse ".../builds/<ID>" from the returned text
+          BUILD_ID=$(printf "%s" "$CREATE_OUT" | sed -nE 's@.*/builds/([0-9a-f-]+).*@\1@p' | head -n1 || true)
+          # Fallback: ask gcloud for the most recent build ID if parsing failed
+          if [[ -z "${BUILD_ID}" ]]; then
+            echo "Could not parse BUILD_ID from submit output; falling back to latest build lookup" >&2
+            BUILD_ID=$(gcloud builds list --project "${PROJECT_ID}" --sort-by=~createTime --limit=1 --format='value(ID)' || true)
+          fi
           if [[ -z "${BUILD_ID}" ]]; then
             echo "❌ Failed to obtain Cloud Build ID" >&2
             exit 1
