@@ -187,7 +187,17 @@ jobs:
                 exit 1
               fi
           - name: 'gcr.io/cloud-builders/docker'
-            args: ['build', '-f', 'Dockerfile', '-t', '${IMAGE_URI}', '.']
+            id: 'cache-pull'
+            entrypoint: 'bash'
+            args:
+            - -c
+            - |
+              set -euo pipefail
+              docker pull '${IMAGE_URI}' || true
+          - name: 'gcr.io/cloud-builders/docker'
+            env:
+            - 'DOCKER_BUILDKIT=1'
+            args: ['build', '--build-arg', 'BUILDKIT_INLINE_CACHE=1', '--cache-from', '${IMAGE_URI}', '-f', 'Dockerfile', '-t', '${IMAGE_URI}', '.']
           images:
           - '${IMAGE_URI}'
           EOF
