@@ -7,13 +7,13 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tar \
-  && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 
 ENV MODEL_PATH=./kcbert_model
-ADD kcbert_model.tar.gz /tmp/model.tar.gz
+COPY kcbert_model.tar.gz /tmp/model.tar.gz
 RUN mkdir -p "$MODEL_PATH" \
     && tar -xzf /tmp/model.tar.gz -C /app \
     && rm -f /tmp/model.tar.gz \
