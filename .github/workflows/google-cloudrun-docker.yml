@@ -192,8 +192,35 @@ jobs:
           - '${IMAGE_URI}'
           EOF
 
-          # Submit build
-          gcloud builds submit --config=cloudbuild.yaml --project "${PROJECT_ID}" .
+          # Submit build without streaming logs (avoids VPC-SC/logs-bucket restrictions)
+          # Capture BUILD_ID from the creation message and poll for completion.
+          CREATE_OUT=$(gcloud builds submit --config=cloudbuild.yaml --project "${PROJECT_ID}" --async .)
+          echo "$CREATE_OUT"
+          BUILD_ID=$(printf "%s" "$CREATE_OUT" | grep -oE 'builds/[0-9a-f-]+' | sed 's|builds/||' | head -n1)
+          if [[ -z "${BUILD_ID}" ]]; then
+            echo "❌ Failed to obtain Cloud Build ID" >&2
+            exit 1
+          fi
+          echo "Cloud Build ID: ${BUILD_ID}"
+          echo "CLOUD_BUILD_ID=${BUILD_ID}" >> "$GITHUB_ENV"
+
+          # Poll build status until completion without streaming logs
+          BUILD_LINK="https://console.cloud.google.com/cloud-build/builds/${BUILD_ID}?project=${PROJECT_ID}"
+          echo "Build link: ${BUILD_LINK}"
+          while true; do
+            STATUS=$(gcloud builds describe "$BUILD_ID" --project "${PROJECT_ID}" --format='value(status)') || STATUS="UNKNOWN"
+            echo "Cloud Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS)
+                break
+                ;;
+              FAILURE|CANCELLED|TIMEOUT|EXPIRED)
+                echo "❌ Cloud Build ended with status: $STATUS" >&2
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
 
       - name: Deploy to Cloud Run
         env:

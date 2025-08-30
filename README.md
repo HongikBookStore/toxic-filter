@@ -14,7 +14,7 @@ Flask + HuggingFace Transformers(토치)로 구현한 한글 비속어 탐지 AP
 - `app.py`: API 서버(모델 로드/추론)
 - `Dockerfile`: 원격 모델 다운로드 방식
 - `scripts/`: 배포/스모크/WIF 스크립트
-- `.github/workflows/deploy-cloud-run.yml`: Cloud Run 배포 워크플로우
+- `.github/workflows/google-cloudrun-docker.yml`: Cloud Run 배포 워크플로우(Cloud Build 사용)
 
 ## 빠른 시작(로컬)
 
@@ -26,14 +26,14 @@ MODEL_GCS_URI=gs://hongbookstore-toxicfilter/models/kcbert_slang_filter_model.ta
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 3) 예제/서버 실행
+# 3) 예제/서버 실행(기본 포트 9090)
 python example_prediction.py    # 모델/토크나이저 로드 예시
-python app.py                   # API 서버 실행 (기본 8080)
+PORT=9090 python app.py         # API 서버 실행 (기본 9090)
 
 # 4) 테스트
-curl -sS http://localhost:8080/health | jq .
+curl -sS http://localhost:9090/health | jq .
 curl -sS -X POST -H 'Content-Type: application/json' \
-  -d '{"text":"예시 문장"}' http://localhost:8080/predict | jq .
+  -d '{"text":"예시 문장"}' http://localhost:9090/predict | jq .
 ```
 
 ## API 사양
@@ -57,27 +57,30 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 ## 컨테이너 실행
 
 ```bash
-docker build -t slang-filter:local --build-arg MODEL_TARBALL_URL=<signed-or-public-url> .
-docker run --rm -p 8080:8080 slang-filter:local
+docker build -t toxic-filter:local --build-arg MODEL_TARBALL_URL=<signed-or-public-url> .
+docker run --rm -p 9090:9090 toxic-filter:local
 ```
 
-## 배포(Cloud Run, 무료 티어)
+## 배포(Cloud Run, GitHub Actions)
 
-권장 배포 흐름은 원격 모델 tar.gz를 GCS에 두고 `Dockerfile.remote`를 사용하는 방식입니다. 상세 절차와 GitHub Actions 자동 배포는 DEPLOYMENT.md를 참고하세요.
+배포는 GitHub Actions 워크플로우(`.github/workflows/google-cloudrun-docker.yml`)로 수행합니다. Workload Identity Federation(WIF)로 비밀키 없이 인증하고, Cloud Build가 GCS에서 모델 tar.gz를 받아 이미지를 빌드/푸시 후 Cloud Run에 배포합니다. 상세 절차는 DEPLOYMENT.md 참고.
 
-요약:
+워크플로우 입력/설정 요약:
+- `image_tag`(선택, 기본 `v1`)
+- `model_gcs_uri`(선택): `gs://bucket/path/model.tar.gz`
+- `api_key`/`cors_origins`/`threshold_*`(선택): 런타임 환경변수로 전달
+- Secrets/Vars 지원: `MODEL_GCS_URI` 또는 `MODEL_GCS_BUCKET`+`MODEL_GCS_PREFIX` 자동 탐색, `MODEL_TARBALL_URL`(HTTP(S)) 지원
 
-1) 모델 패키징/업로드/서명 URL 발급
+필수 GitHub Secrets:
+- `GCP_PROJECT_ID`, `GCP_SERVICE_ACCOUNT`, `GCP_WORKLOAD_IDENTITY_PROVIDER`
 
-```bash
-BUCKET=<버킷> REGION=asia-northeast3 DURATION=1h \
-  bash scripts/gcs_model_publish.sh
-# 출력된 MODEL_TARBALL_URL 복사
-```
+필수(대표) 권한/IAM:
+- 대상 SA → GitHub OIDC 주체: `roles/iam.workloadIdentityUser`
+- 프로젝트 레벨: `roles/run.developer`, `roles/artifactregistry.admin`, `roles/cloudbuild.builds.editor`, `roles/serviceusage.serviceUsageConsumer`
+- 모델 버킷 읽기: 버킷에 `roles/storage.objectViewer`(Cloud Build 실행 계정)
+- 필요 시 기본 Cloud Build 소스 버킷(`<PROJECT>_cloudbuild`)에 쓰기: 해당 버킷에 `roles/storage.objectAdmin`(또는 동등 권한)
 
-2) GitHub Actions 실행 → inputs에 `model_tarball_url` 지정
-
-3) Cloud Run URL로 `/health`, `/predict` 스모크 테스트
+참고: 조직 정책/VPC-SC로 Cloud Build 로그 스트리밍이 제한되는 환경을 고려해, 워크플로우는 Cloud Build를 비동기로 제출하고 `gcloud builds describe`로 상태를 폴링합니다. 콘솔 링크를 출력하므로 로그는 콘솔에서 확인하세요.
 
 ## Spring(WebClient) 연동 예시
 
