@@ -1,4 +1,5 @@
 import os
+import threading
 import torch
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -39,6 +40,7 @@ except Exception:
 # --- 모델 로드 (최초 1회) ---
 tokenizer = None
 model = None
+_model_lock = threading.Lock()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -56,7 +58,12 @@ def load_model():
         model = None
 
 
-load_model()
+def ensure_model_loaded():
+    global tokenizer, model
+    if tokenizer is None or model is None:
+        with _model_lock:
+            if tokenizer is None or model is None:
+                load_model()
 
 
 @app.before_request
@@ -131,6 +138,7 @@ def health():
 
 @app.route("/predict", methods=["POST"])
 def handle_prediction():
+    ensure_model_loaded()
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
 

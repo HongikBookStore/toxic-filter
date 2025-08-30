@@ -1,7 +1,10 @@
 FROM python:3.13.7-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    OMP_NUM_THREADS=1 \
+    TORCH_INTRA_OP_THREADS=1 \
+    TORCH_INTER_OP_THREADS=1
 
 WORKDIR /app
 
@@ -33,5 +36,5 @@ COPY app.py ./
 ENV PORT=9090
 EXPOSE 9090
 
-# Bind gunicorn to $PORT provided by Cloud Run; default to 9090 for local runs
-CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 2 --timeout 120 --preload -b 0.0.0.0:${PORT:-9090} app:app"]
+# Bind gunicorn to $PORT; avoid --preload to reduce peak memory during fork
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 1 --timeout 120 -b 0.0.0.0:${PORT:-9090} app:app"]
