@@ -240,34 +240,40 @@ jobs:
           set -euo pipefail
 
           # Build env var list conditionally
-          ENV_VARS="PORT=9090"
+          ENV_VARS=""
           if [[ -n "${API_KEY_IN:-}" ]]; then
-            ENV_VARS+=",API_KEY=${API_KEY_IN}"
+            ENV_VARS+="API_KEY=${API_KEY_IN}"
           fi
           if [[ -n "${CORS_ORIGINS_IN:-}" ]]; then
-            ENV_VARS+=",CORS_ORIGINS=${CORS_ORIGINS_IN}"
+            ENV_VARS+="${ENV_VARS:+,}CORS_ORIGINS=${CORS_ORIGINS_IN}"
           fi
           if [[ -n "${THRESHOLD_CERTAIN_IN:-}" ]]; then
-            ENV_VARS+=",MALICIOUS_THRESHOLD_CERTAIN=${THRESHOLD_CERTAIN_IN}"
+            ENV_VARS+="${ENV_VARS:+,}MALICIOUS_THRESHOLD_CERTAIN=${THRESHOLD_CERTAIN_IN}"
           fi
           if [[ -n "${THRESHOLD_AMBIGUOUS_IN:-}" ]]; then
-            ENV_VARS+=",MALICIOUS_THRESHOLD_AMBIGUOUS=${THRESHOLD_AMBIGUOUS_IN}"
+            ENV_VARS+="${ENV_VARS:+,}MALICIOUS_THRESHOLD_AMBIGUOUS=${THRESHOLD_AMBIGUOUS_IN}"
           fi
 
-          gcloud run deploy "${{ env.SERVICE }}" \
-            --image "${IMAGE_URI}" \
-            --region "${{ env.REGION }}" \
-            --platform managed \
-            --allow-unauthenticated \
-            --cpu=1 \
-            --memory=1Gi \
-            --concurrency=80 \
-            --min-instances=0 \
-            --max-instances=3 \
-            --port=9090 \
-            --ingress=all \
-            --labels=deployed_by=github-actions,commit_sha=${{ github.sha }} \
-            --update-env-vars "${ENV_VARS}"
+          # Build args array and conditionally include --update-env-vars
+          ARGS=(
+            gcloud run deploy "${{ env.SERVICE }}"
+            --image "${IMAGE_URI}"
+            --region "${{ env.REGION }}"
+            --platform managed
+            --allow-unauthenticated
+            --cpu=1
+            --memory=1Gi
+            --concurrency=80
+            --min-instances=0
+            --max-instances=3
+            --port=9090
+            --ingress=all
+            --labels=deployed_by=github-actions,commit_sha=${{ github.sha }}
+          )
+          if [[ -n "${ENV_VARS}" ]]; then
+            ARGS+=( --update-env-vars "${ENV_VARS}" )
+          fi
+          "${ARGS[@]}"
 
       - name: Get service URL
         id: url

@@ -33,4 +33,5 @@ COPY app.py ./
 ENV PORT=9090
 EXPOSE 9090
 
-CMD ["gunicorn", "--workers", "1", "--threads", "2", "--timeout", "120", "--preload", "-b", "0.0.0.0:9090", "app:app"]
+# Bind gunicorn to $PORT provided by Cloud Run; default to 9090 for local runs
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 2 --timeout 120 --preload -b 0.0.0.0:${PORT:-9090} app:app"]

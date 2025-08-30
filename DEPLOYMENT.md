@@ -123,7 +123,9 @@ gcloud run deploy "$SERVICE_NAME" \
   --concurrency 80 --timeout 120 \
   --min-instances 0 --max-instances 3 \
   --port 9090 \
-  --set-env-vars PORT=9090,API_KEY=,CORS_ORIGINS=,MALICIOUS_THRESHOLD_CERTAIN=0.999,MALICIOUS_THRESHOLD_AMBIGUOUS=0.9
+  --set-env-vars API_KEY=,CORS_ORIGINS=,MALICIOUS_THRESHOLD_CERTAIN=0.999,MALICIOUS_THRESHOLD_AMBIGUOUS=0.9
+
+참고: Cloud Run은 `PORT` 환경변수를 예약해 서비스가 리스닝해야 할 포트를 컨테이너에 주입합니다. `PORT`를 `--set-env-vars`로 설정하면 배포가 실패합니다. 컨테이너는 `$PORT`에 바인드하거나, 서비스 수준의 `--port` 플래그로 컨테이너 포트를 지정하세요.
 ```
 
 ---
