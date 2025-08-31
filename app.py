@@ -4,6 +4,7 @@ import torch
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch.nn as nn
 
 
 app = Flask(__name__)
@@ -48,8 +49,21 @@ def load_model():
     global tokenizer, model
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
-        model.to(device)
+        # Reduce peak RAM while loading
+        tmp = AutoModelForSequenceClassification.from_pretrained(
+            MODEL_PATH,
+            low_cpu_mem_usage=True,
+        )
+        # Dynamic quantization for CPU: cuts RAM and can speed up inference
+        try:
+            tmp = torch.quantization.quantize_dynamic(
+                tmp, {nn.Linear}, dtype=torch.qint8
+            )
+        except Exception:
+            # If quantization not available, continue with fp32
+            pass
+        model = tmp
+        model.to("cpu")
         model.eval()
         app.logger.info("Model loaded successfully at %s", MODEL_PATH)
     except Exception as e:
