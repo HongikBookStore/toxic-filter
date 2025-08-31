@@ -79,6 +79,19 @@ def ensure_model_loaded():
             if tokenizer is None or model is None:
                 load_model()
 
+# Warm up the model in a background thread so first user request isn't blocked
+def _warmup_background():
+    try:
+        ensure_model_loaded()
+        app.logger.info("Warmup completed; model ready")
+    except Exception as e:
+        app.logger.warning("Warmup failed: %s", e)
+
+try:
+    threading.Thread(target=_warmup_background, daemon=True).start()
+except Exception:
+    pass
+
 
 @app.before_request
 def check_api_key():

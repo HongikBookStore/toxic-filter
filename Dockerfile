@@ -36,5 +36,5 @@ COPY app.py ./
 ENV PORT=9090
 EXPOSE 9090
 
-# Bind gunicorn to $PORT; avoid --preload to reduce peak memory during fork
-CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 1 --timeout 120 -b 0.0.0.0:${PORT:-9090} app:app"]
+# Bind gunicorn to $PORT; 1 worker, 2 threads to handle two concurrent requests
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 2 --timeout 120 -b 0.0.0.0:${PORT:-9090} app:app"]

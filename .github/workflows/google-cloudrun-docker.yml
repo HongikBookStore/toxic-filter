@@ -272,7 +272,7 @@ jobs:
             --platform managed
             --allow-unauthenticated
             --cpu=1
-            --memory=1Gi
+            --memory=2Gi
             --concurrency=80
             --min-instances=0
             --max-instances=3

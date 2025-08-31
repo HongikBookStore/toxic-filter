@@ -119,7 +119,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --region "$REGION" \
   --platform managed \
   --allow-unauthenticated \
-  --cpu 1 --memory 1Gi \
+  --cpu 1 --memory 2Gi \
   --concurrency 80 --timeout 120 \
   --min-instances 0 --max-instances 3 \
   --port 9090 \
