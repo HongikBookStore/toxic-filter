@@ -26,7 +26,9 @@ declare -a tests=(
   "예수 십새끼 개새끼 창녀아들 애비실종 가정교육 못받은 무뇌충"
   "나이쳐먹고 피시방가는 놈들은 대가리에 똥만찬 놈들임"
   "원 리더십, 원 메시지로 내부 결속을 더 강화하고 다시 교회로 모일수 있기를"
-  "협박스킬은 패시브랑께"
+  "협박스킬은 패시브랑께",
+  "this is english text",
+  "this is english text with some special characters !@#$%",
 )
 
 for t in "${tests[@]}"; do
