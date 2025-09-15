@@ -1,6 +1,7 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import sys
+import re
 
 # 1. 저장된 모델과 토크나이저 로드
 model_save_path = "./kcbert_model"
@@ -22,6 +23,10 @@ print(f"모델이 {device}에 로드되었습니다.")
 
 # 2. 예측 함수 정의 (라벨 해석 반전)
 def predict_slang(text):
+    # 한글이 포함되어 있는지 확인
+    if not re.search(r"[\uac00-\ud7a3]", text):
+        return "비악성 채팅", [0.0, 1.0]  # 한글이 없으면 비악성으로 처리
+    
     inputs = loaded_tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128).to(device)
     with torch.no_grad():
         outputs = loaded_model(**inputs)
@@ -45,7 +50,9 @@ test_sentences = [
     "예수 십새끼 개새끼 창녀아들 애비실종 가정교육 못받은 무뇌충",
     "나이쳐먹고 피시방가는 놈들은 대가리에 똥만찬 놈들임",
     "원 리더십, 원 메시지로 내부 결속을 더 강화하고 다시 교회로 모일수 있기를",
-    "협박스킬은 패시브랑께"
+    "협박스킬은 패시브랑께",
+    "this is english text",
+    "this is english text with some special characters !@#$%",
 ]
 
 for sentence in test_sentences:

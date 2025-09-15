@@ -1,6 +1,7 @@
 import os
 import threading
 import torch
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -110,6 +111,11 @@ def get_prediction_level(
     if not model or not tokenizer:
         return "모델 로드 오류", {"malicious": 0.0, "clean": 0.0}
 
+    # 한글(AC00–D7A3) 문자가 전혀 없으면 즉시 비속어 아님으로 처리
+    # example_prediction.py와 동일한 기준 적용
+    if not re.search(r"[\uac00-\ud7a3]", text):
+        return "비속어 아님", {"malicious": 0.0, "clean": 1.0}
+
     try:
         inputs = tokenizer(
             text,
@@ -117,7 +123,7 @@ def get_prediction_level(
             truncation=True,
             padding=True,
             max_length=128,
-        ).to(device)
+        ).to("cpu")
         with torch.no_grad():
             outputs = model(**inputs)
 
